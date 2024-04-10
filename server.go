@@ -26,6 +26,7 @@ var (
 	clientsLock sync.Mutex
 	messageLog    []Message
 	messageLock sync.Mutex
+	maxUsers = 2
 )
 
 func main() {
@@ -38,8 +39,11 @@ func main() {
 	defer ln.Close()
 
 	go storeMessageLog()
-	
-	for {
+
+	totalUsers := 0
+
+ 	for totalUsers <= maxUsers {
+
 		conn, err := ln.Accept()
 		if err != nil {
 			fmt.Println("Error accepting connection:", err)
@@ -52,8 +56,11 @@ func main() {
 		clients = append(clients, client)
 		clientsLock.Unlock()
 
+		totalUsers++
 		go handleConnection(client)
 	}
+
+	fmt.Print("Maximum users reached. Cannot accept more connections.")
 }
 
 func handleConnection(client *Client) {
@@ -70,6 +77,14 @@ func handleConnection(client *Client) {
 			}
 		}
 	}()
+
+	clientsLock.Lock()
+	if len(clients) >= maxUsers {
+		fmt.Fprint(client.conn, "Maximum users reached. Cannot accept more connections.")
+		clientsLock.Unlock()
+		return
+	}
+	clientsLock.Unlock()
 
 	reader := bufio.NewReader(client.conn)
 	fmt.Fprint(client.conn, "Enter your name: ")
@@ -88,6 +103,12 @@ func handleConnection(client *Client) {
 			return
 		}
 		message = strings.TrimSpace(message)
+
+		if message == "/users" {
+            totalUsers := getTotalUsers()
+            client.conn.Write([]byte(fmt.Sprintf("Total online users: %d\n", totalUsers)))
+            continue
+        }
 
 		currentTime := time.Now().Format("15:04:05")
 
@@ -153,4 +174,8 @@ func storeMessageLog() {
     }
 }
 
-
+func getTotalUsers() int {
+    clientsLock.Lock()
+    defer clientsLock.Unlock()
+    return len(clients)
+}
