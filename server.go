@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -14,9 +15,17 @@ type Client struct {
 	name string
 }
 
+type Message struct {
+	Name    string
+	Content string
+	Time    string
+}
+
 var (
 	clients     []*Client
 	clientsLock sync.Mutex
+	messageLog    []Message
+	messageLock sync.Mutex
 )
 
 func main() {
@@ -28,6 +37,8 @@ func main() {
 	}
 	defer ln.Close()
 
+	go storeMessageLog()
+	
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -77,18 +88,27 @@ func handleConnection(client *Client) {
 			return
 		}
 		message = strings.TrimSpace(message)
-		fmt.Printf("[%s]: %s\n", client.name, message)
 
 		currentTime := time.Now().Format("15:04:05")
-		fmt.Println("Received at:", currentTime)
 
-		broadcast(fmt.Sprintf("%s: %s %s\n", client.name, message, currentTime))
+		modifiedMessage := fmt.Sprintf("%s: %s %s\n", client.name, message, currentTime)
+        broadcast(modifiedMessage)
+
+		historyMessage := Message{Name: client.name, Content: message, Time: currentTime}
+		addToMessageLog(historyMessage)
+		
+		messageLock.Lock()
+		messageLog = append(messageLog, historyMessage)
+		messageLock.Unlock()
 	}
 }
+
 
 func broadcast(message string) {
 	clientsLock.Lock()
 	defer clientsLock.Unlock()
+
+	message = "\n" + message
 
 	for _, client := range clients {
 		_, err := client.conn.Write([]byte(message + "\n"))
@@ -98,4 +118,39 @@ func broadcast(message string) {
 		}
 	}
 }
+
+func addToMessageLog(message Message) {
+	messageLock.Lock()
+	defer messageLock.Unlock()
+
+	messageLog = append(messageLog, message)
+}
+
+func storeMessageLog() {
+    for {
+        time.Sleep(5 * time.Second)
+        messageLock.Lock()
+
+        file, err := os.OpenFile("message_log.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+        if err != nil {
+            fmt.Println("Error opening file:", err)
+            messageLock.Unlock()
+            continue
+        }
+
+        writer := bufio.NewWriter(file)
+        for _, msg := range messageLog {
+            _, err := fmt.Fprintf(writer, "[%s] %s: %s\n", msg.Time, msg.Name, msg.Content)
+            if err != nil {
+                fmt.Println("Error writing to file:", err)
+                break
+            }
+        }
+        writer.Flush()
+        file.Close()
+
+        messageLock.Unlock()
+    }
+}
+
 
