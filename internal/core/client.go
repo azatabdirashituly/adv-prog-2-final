@@ -20,7 +20,7 @@ func NewClient(conn net.Conn) *Client {
 func (c *Client) Greet() {
 	fmt.Fprint(c.Conn, "Welcome to the TCP Chat Server! Please enter your name: ")
 	name, _ := bufio.NewReader(c.Conn).ReadString('\n')
-	name = name[:len(name)-1] // Removes the last character (newline)
+	name = strings.TrimSpace(name)
 	c.Name = name
 	fmt.Fprintf(c.Conn, "Hello %s, you can join a chat room using /join [room_name] or create one with /create [room_name].\n", c.Name)
 }
