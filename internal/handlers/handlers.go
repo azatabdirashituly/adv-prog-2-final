@@ -12,10 +12,10 @@ type ChatMessageHandler struct{}
 
 func (h *ChatMessageHandler) HandleMessage(client *core.Client, message string) {
 	cleanMessage := strings.TrimSpace(message)
-	cleanMessage = strings.ToLower(cleanMessage) // Convert message to lowercase for case-insensitive comparison
+	cleanMessage = strings.ToLower(cleanMessage)
 
-	if client.ChatRoom == nil || strings.HasPrefix(cleanMessage, "/") {
-		command := strings.Fields(cleanMessage) // Split message into fields to handle commands with arguments
+	if strings.HasPrefix(cleanMessage, "/") {
+		command := strings.Fields(cleanMessage)
 		if len(command) == 0 {
 			fmt.Fprintf(client.Conn, "Unknown command. Type /help for command list.\n")
 			return
@@ -61,8 +61,13 @@ func (h *ChatMessageHandler) HandleMessage(client *core.Client, message string) 
 		default:
 			fmt.Fprintf(client.Conn, "Unknown command. Type /help for command list.\n")
 		}
+		return
+	}
+
+	if client.ChatRoom == nil {
+		fmt.Fprintf(client.Conn, "You are not currently in any chat room. Please join one to start chatting.\n")
+		return
 	} else {
-		// Normal chat message handling
 		h.broadcast(client.ChatRoom, client.Name, cleanMessage)
 	}
 }
@@ -85,24 +90,22 @@ func (h *ChatMessageHandler) kick(client *core.Client, username string) {
 		return
 	}
 
-	normalizedUsername := strings.ToLower(username) // Normalize input for comparison
+	normalizedUsername := strings.ToLower(username)
 	found := false
 
-	if client.ChatRoom.Creator.Name == normalizedUsername {
-		fmt.Fprintf(client.Conn, "You cannot kick yourself")
-		return
-	}
-
 	client.ChatRoom.Lock.Lock()
-	for i, c := range client.ChatRoom.Clients {
-		if c.Name == normalizedUsername {
-			client.ChatRoom.Clients = append(client.ChatRoom.Clients[:i], client.ChatRoom.Clients[i+1:]...)
+	newClients := []*core.Client{}
+	for _, c := range client.ChatRoom.Clients {
+		if strings.ToLower(c.Name) == normalizedUsername {
 			fmt.Fprintf(c.Conn, "You have been kicked from the room.\n")
-			c.Conn.Close() // Force disconnect
+			c.ChatRoom = nil                                       // Set the ChatRoom to nil to disconnect them from the room
+			client.ChatRoom.KickedUsers[normalizedUsername] = true // Add to kicked list
 			found = true
-			break
+		} else {
+			newClients = append(newClients, c)
 		}
 	}
+	client.ChatRoom.Clients = newClients
 	client.ChatRoom.Lock.Unlock()
 
 	if found {
@@ -118,13 +121,27 @@ func (h *ChatMessageHandler) ban(client *core.Client, username string) {
 		fmt.Fprintf(client.Conn, "You do not have permissions to ban users from this room.\n")
 		return
 	}
-	// Logic to ban the user (simplified example)
+
+	normalizedUsername := strings.ToLower(username) // Normalize input for comparison
+	found := false
+
+	client.ChatRoom.Lock.Lock()
 	for i, c := range client.ChatRoom.Clients {
-		if c.Name == username {
+		if strings.ToLower(c.Name) == normalizedUsername {
 			client.ChatRoom.Clients = append(client.ChatRoom.Clients[:i], client.ChatRoom.Clients[i+1:]...)
-			fmt.Fprintf(c.Conn, "You have been banned from the room.\n")
+			fmt.Fprintf(c.Conn, "You have been banned from the room and the server.\n")
+			c.Conn.Close() // Disconnect the user completely from the server
+			found = true
 			break
 		}
+	}
+	client.ChatRoom.Lock.Unlock()
+
+	if found {
+		h.broadcast(client.ChatRoom, "Server", fmt.Sprintf("%s has been banned and disconnected from the server.", username))
+		fmt.Fprintf(client.Conn, "%s has been banned and disconnected from the server.\n", username)
+	} else {
+		fmt.Fprintf(client.Conn, "User '%s' not found in the chat room.\n", username)
 	}
 }
 
@@ -165,21 +182,25 @@ func (h *ChatMessageHandler) joinChatRoom(client *core.Client, name string) {
 		chat.ChatRoomsLock.Unlock()
 		return
 	}
-	defer chat.ChatRoomsLock.Unlock()
+
+	if chatRoom.KickedUsers[strings.ToLower(client.Name)] {
+		fmt.Fprintf(client.Conn, "You have been kicked from this chat room and cannot join.\n")
+		chat.ChatRoomsLock.Unlock()
+		return
+	}
+
+	chat.ChatRoomsLock.Unlock()
 
 	if client.ChatRoom != nil {
 		h.leaveChatRoom(client)
 	}
 
 	chatRoom.Lock.Lock()
-	client.Name = strings.ToLower(client.Name) // Normalize the username upon joining
 	chatRoom.Clients = append(chatRoom.Clients, client)
 	client.ChatRoom = chatRoom
 	chatRoom.Lock.Unlock()
 
-	// Notify other members in the chat room
 	h.broadcast(chatRoom, client.Name, "has joined the chat room.")
-
 	fmt.Fprintf(client.Conn, "You joined chat room '%s'.\n", name)
 }
 
