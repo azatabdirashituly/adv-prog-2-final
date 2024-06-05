@@ -24,4 +24,4 @@ This is a simple chat application that uses TCP sockets to communicate between a
 
 - Azat Abdirashituly
 - Baurzhan Saliyev
-
+- Dias Imakanov
