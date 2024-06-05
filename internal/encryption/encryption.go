@@ -4,60 +4,65 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"strings"
 )
 
-// Encrypt encrypts plain text string using AES in CFB mode and returns base64 encoded string.
-func Encrypt(text string, key string) (string, error) {
-	// Generate a new AES cipher using the key
-	block, err := aes.NewCipher([]byte(key))
+func Encrypt(key []byte, text string) (string, error) {
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
 	}
 
-	// Create a new byte array the size of the text plus the block size for the IV
-	ciphertext := make([]byte, aes.BlockSize+len(text))
+	b := []byte(text)
+	ciphertext := make([]byte, aes.BlockSize+len(b))
 	iv := ciphertext[:aes.BlockSize]
-
-	// Read a random IV
 	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
 		return "", err
 	}
 
-	// Encrypt the text using CFB mode
 	stream := cipher.NewCFBEncrypter(block, iv)
-	stream.XORKeyStream(ciphertext[aes.BlockSize:], []byte(text))
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], b)
 
-	// Return the encoded base64 string
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
+	return fmt.Sprintf("%x:%x", iv, ciphertext[aes.BlockSize:]), nil
 }
 
-// Decrypt decrypts a base64 encoded string using AES in CFB mode and returns the plain text string.
-func Decrypt(encodedText string, key string) (string, error) {
-	ciphertext, err := base64.StdEncoding.DecodeString(encodedText)
+func Decrypt(key []byte, cryptoText string) (string, error) {
+	parts := strings.SplitN(cryptoText, ":", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid encrypted text format")
+	}
+
+	iv, err := hex.DecodeString(parts[0])
 	if err != nil {
 		return "", err
 	}
 
-	if len(ciphertext) < aes.BlockSize {
-		return "", fmt.Errorf("ciphertext too short")
-	}
-
-	// Generate a new AES cipher using the key
-	block, err := aes.NewCipher([]byte(key))
+	ciphertext, err := hex.DecodeString(parts[1])
 	if err != nil {
 		return "", err
 	}
 
-	// Get the IV from the ciphertext
-	iv := ciphertext[:aes.BlockSize]
-	ciphertext = ciphertext[aes.BlockSize:]
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
 
-	// Decrypt the text using CFB mode
 	stream := cipher.NewCFBDecrypter(block, iv)
 	stream.XORKeyStream(ciphertext, ciphertext)
 
 	return string(ciphertext), nil
+}
+
+func GenerateKey(size int) ([]byte, error) {
+	if size != 16 && size != 24 && size != 32 {
+		return nil, fmt.Errorf("invalid key size: %d. Valid sizes are 16, 24, or 32 bytes", size)
+	}
+	key := make([]byte, size)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
