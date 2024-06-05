@@ -89,6 +89,10 @@ func (h *ChatMessageHandler) kick(client *core.Client, username string) {
 		fmt.Fprintf(client.Conn, "You do not have permissions to kick users from this room.\n")
 		return
 	}
+	if client.ChatRoom.Creator.Name == client.Name {
+		fmt.Fprintf(client.Conn, "You cannot kick yourself from the room.\n")
+		return
+	}
 
 	normalizedUsername := strings.ToLower(username)
 	found := false
