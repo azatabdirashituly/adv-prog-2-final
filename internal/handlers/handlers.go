@@ -5,70 +5,109 @@ import (
 	"strings"
 	"tcp-chat/internal/chat"
 	"tcp-chat/internal/core"
+	"tcp-chat/internal/encryption"
 	"time"
 )
 
 type ChatMessageHandler struct{}
 
+var encryptionKey = []byte("aes256key-32characterslongpasswo")
+
 func (h *ChatMessageHandler) HandleMessage(client *core.Client, message string) {
-	cleanMessage := strings.TrimSpace(message)
-	cleanMessage = strings.ToLower(cleanMessage)
-
-	if strings.HasPrefix(cleanMessage, "/") {
-		command := strings.Fields(cleanMessage)
-		if len(command) == 0 {
-			fmt.Fprintf(client.Conn, "Unknown command. Type /help for command list.\n")
-			return
-		}
-
-		switch command[0] {
-		case "/help":
-			h.help(client)
-		case "/create":
-			if len(command) < 2 {
-				fmt.Fprintf(client.Conn, "Usage: /create [room_name]\n")
-				return
-			}
-			chatName := strings.Join(command[1:], " ") // Support chat names with spaces
-			h.createChatRoom(client, chatName)
-		case "/join":
-			if len(command) < 2 {
-				fmt.Fprintf(client.Conn, "Usage: /join [room_name]\n")
-				return
-			}
-			chatName := strings.Join(command[1:], " ")
-			h.joinChatRoom(client, chatName)
-		case "/users":
-			if client.ChatRoom == nil {
-				fmt.Fprintf(client.Conn, "You are not in a chat room.\n")
-			} else {
-				h.listUsers(client)
-			}
-		case "/kick":
-			if len(command) < 2 {
-				fmt.Fprintf(client.Conn, "Usage: /kick [username]\n")
-				return
-			}
-			username := strings.Join(command[1:], " ")
-			h.kick(client, username)
-		case "/ban":
-			if len(command) < 2 {
-				fmt.Fprintf(client.Conn, "Usage: /ban [username]\n")
-				return
-			}
-			username := strings.Join(command[1:], " ")
-			h.ban(client, username)
-		default:
-			fmt.Fprintf(client.Conn, "Unknown command. Type /help for command list.\n")
-		}
+	if strings.HasPrefix(message, "/") {
+		h.handleCommand(client, message)
 		return
 	}
 
+	h.processChatMessage(client, message)
+}
+
+func (h *ChatMessageHandler) handleCommand(client *core.Client, command string) {
+	command = strings.TrimSpace(command)
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		fmt.Fprintf(client.Conn, "Unknown command. Type /help for command list.\n")
+		return
+	}
+
+	switch parts[0] {
+	case "/help":
+		h.help(client)
+	case "/create":
+		if len(parts) < 2 {
+			fmt.Fprintf(client.Conn, "Usage: /create [room_name]\n")
+			return
+		}
+		chatName := strings.Join(parts[1:], " ")
+		h.createChatRoom(client, chatName)
+	case "/join":
+		if len(parts) < 2 {
+			fmt.Fprintf(client.Conn, "Usage: /join [room_name]\n")
+			return
+		}
+		chatName := strings.Join(parts[1:], " ")
+		h.joinChatRoom(client, chatName)
+	case "/users":
+		if client.ChatRoom == nil {
+			fmt.Fprintf(client.Conn, "You are not in a chat room.\n")
+		} else {
+			h.listUsers(client)
+		}
+	case "/kick":
+		if len(parts) < 2 {
+			fmt.Fprintf(client.Conn, "Usage: /kick [username]\n")
+			return
+		}
+		username := strings.Join(parts[1:], " ")
+		h.kick(client, username)
+	case "/ban":
+		if len(parts) < 2 {
+			fmt.Fprintf(client.Conn, "Usage: /ban [username]\n")
+			return
+		}
+		username := strings.Join(parts[1:], " ")
+		h.ban(client, username)
+	default:
+		fmt.Fprintf(client.Conn, "Unknown command. Type /help for command list.\n")
+	}
+}
+
+func (h *ChatMessageHandler) processChatMessage(client *core.Client, message string) {
 	if client.ChatRoom == nil {
 		fmt.Fprintf(client.Conn, "You are not currently in any chat room. Please join one to start chatting.\n")
 		return
-	} else {
-		h.broadcast(client.ChatRoom, client.Name, cleanMessage)
+	}
+
+	encryptedMessage, err := encryption.Encrypt(encryptionKey, message)
+	if err != nil {
+		fmt.Fprintf(client.Conn, "Error encrypting message: %s\n", err)
+		fmt.Println("Error encrypting message:", err)
+		return
+	}
+
+	fmt.Println("Encrypted message:", encryptedMessage)
+	h.broadcast(client.ChatRoom, client.Name, encryptedMessage)
+}
+
+func (h *ChatMessageHandler) broadcast(chatRoom *core.ChatRoom, username, encryptedMessage string) {
+	chatRoom.Lock.Lock()
+	defer chatRoom.Lock.Unlock()
+
+	currentTime := time.Now().Format("15:04")
+	formattedMessage := fmt.Sprintf("%s: [%s] %s\n", currentTime, username, encryptedMessage)
+	fmt.Println("Broadcasting encrypted message:", formattedMessage)
+
+	for _, client := range chatRoom.Clients {
+		decryptedMessage, err := encryption.Decrypt(encryptionKey, encryptedMessage)
+		if err != nil {
+			continue
+		}
+
+		fmt.Println("Decrypted message:", decryptedMessage)
+		finalMessage := fmt.Sprintf("%s: [%s] %s\n", currentTime, username, decryptedMessage)
+		if _, err := client.Conn.Write([]byte(finalMessage)); err != nil {
+			fmt.Println("Error writing to client:", err)
+		}
 	}
 }
 
@@ -91,6 +130,11 @@ func (h *ChatMessageHandler) kick(client *core.Client, username string) {
 	}
 
 	normalizedUsername := strings.ToLower(username)
+	if normalizedUsername == strings.ToLower(client.Name) {
+		fmt.Fprintf(client.Conn, "You cannot kick yourself from this room.\n")
+		return
+	}
+
 	found := false
 
 	client.ChatRoom.Lock.Lock()
@@ -98,8 +142,8 @@ func (h *ChatMessageHandler) kick(client *core.Client, username string) {
 	for _, c := range client.ChatRoom.Clients {
 		if strings.ToLower(c.Name) == normalizedUsername {
 			fmt.Fprintf(c.Conn, "You have been kicked from the room.\n")
-			c.ChatRoom = nil                                       // Set the ChatRoom to nil to disconnect them from the room
-			client.ChatRoom.KickedUsers[normalizedUsername] = true // Add to kicked list
+			c.ChatRoom = nil
+			client.ChatRoom.KickedUsers[normalizedUsername] = true
 			found = true
 		} else {
 			newClients = append(newClients, c)
@@ -122,7 +166,12 @@ func (h *ChatMessageHandler) ban(client *core.Client, username string) {
 		return
 	}
 
-	normalizedUsername := strings.ToLower(username) // Normalize input for comparison
+	normalizedUsername := strings.ToLower(username)
+	if normalizedUsername == strings.ToLower(client.Name) {
+		fmt.Fprintf(client.Conn, "You cannot ban yourself from this room.\n")
+		return
+	}
+
 	found := false
 
 	client.ChatRoom.Lock.Lock()
@@ -130,7 +179,7 @@ func (h *ChatMessageHandler) ban(client *core.Client, username string) {
 		if strings.ToLower(c.Name) == normalizedUsername {
 			client.ChatRoom.Clients = append(client.ChatRoom.Clients[:i], client.ChatRoom.Clients[i+1:]...)
 			fmt.Fprintf(c.Conn, "You have been banned from the room and the server.\n")
-			c.Conn.Close() // Disconnect the user completely from the server
+			c.Conn.Close()
 			found = true
 			break
 		}
@@ -145,22 +194,6 @@ func (h *ChatMessageHandler) ban(client *core.Client, username string) {
 	}
 }
 
-func (h *ChatMessageHandler) broadcast(chatRoom *core.ChatRoom, username, message string) {
-	chatRoom.Lock.Lock()
-	defer chatRoom.Lock.Unlock()
-
-	// Format the message with the time, username, and message content
-	currentTime := time.Now().Format("15:04")
-	formattedMessage := fmt.Sprintf("%s: [%s] %s\n", currentTime, username, message)
-
-	fmt.Printf("Broadcasting message: %s\n", formattedMessage) // Debug output to see the broadcasting action
-	for _, client := range chatRoom.Clients {
-		if _, err := client.Conn.Write([]byte(formattedMessage)); err != nil {
-			fmt.Println("Error writing to client:", err)
-		}
-	}
-}
-
 func (h *ChatMessageHandler) createChatRoom(client *core.Client, name string) {
 	chat.ChatRoomsLock.Lock()
 	defer chat.ChatRoomsLock.Unlock()
@@ -170,7 +203,7 @@ func (h *ChatMessageHandler) createChatRoom(client *core.Client, name string) {
 		return
 	}
 
-	chat.ChatRooms[name] = core.NewChatRoom(name, client) // Assign the creator here
+	chat.ChatRooms[name] = core.NewChatRoom(name, client)
 	fmt.Fprintf(client.Conn, "Chat room '%s' created. You can join now using '/join %s'.\n", name, name)
 }
 
@@ -233,6 +266,6 @@ func (h *ChatMessageHandler) listUsers(client *core.Client) {
 
 	fmt.Fprintf(client.Conn, "Users in '%s':\n", client.ChatRoom.Name)
 	for _, user := range client.ChatRoom.Clients {
-		fmt.Fprintf(client.Conn, "- %s\n", user.Name) // Display names as stored
+		fmt.Fprintf(client.Conn, "- %s\n", user.Name)
 	}
 }
